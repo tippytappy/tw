@@ -1,113 +1,112 @@
-# netbase spatial query: jobs within a radius from a point xy
-# output
-# - csv of the records
-# - markdown file with leaflet map
-
-# QUERY  ######################################################################
-query <- '
-select 
-A.NBLINK                              "Internal Ident",
-A.ORDER_EXTERNAL_ID2                  "notification",
-A.PARENT_EXTERNAL_ID1                 "superior_order",
-A.EXTERNAL_ID1                        "order",
-A.EXTERNAL_ID2                        "operation",
-A.EXTERNAL_ID3                        "ID3",
-A.EXTERNAL_ID4                        "ID4",
-A.TEXT_FIELD138                       "maint_operation",
-A.TEXT_FIELD141                       "maint_work_order",
-A.PRIORITY                            "priority",
-A.FINANCE_CODE                        "finance_code",
-A.DATE_FIELD1                         "Started Estimate",
-A.ACTUAL_START_DATE                   "Date Reported",
-A.ACTUAL_FINISH_DATE                  "Date Completed",
-A.DATE_FIELD3                         "Completed Target Date",
-A.NUMBER_FIELD8                       "Planned Hours",
-A.ACTUAL_WORK_DURATION                "Total Hours",
-A.TEXT_FIELD29                        "Resolution Code Vistec",
-A.TEXT_FIELD145                       "Resolution Code SAP",
-A.DATE_FIELD4                         "imp Job Status Date",
-A.CURRENT_IMP_USER_STATUS             "imp Job Status Code",
-A.CURRENT_IMP_USER_STATUS_DESC        "imp Job Status Desc",
-A.CURRENT_NB_STATUS                   "nbs Status Code",
-A.CURRENT_NB_STATUS_DESC              "nbs Status Description",
-A.RAISED_OPERATION_TYPE               "Reported code",
-A.RAISED_OPERATION_TYPE_DESC          "Reported Description",
-A.CURRENT_OPERATION_TYPE              "Completed code",
-A.CURRENT_OPERATION_TYPE_DESC         "Completed Description",
-A.TEXT_FIELD53                        "Verified code",
-A.TEXT_FIELD23                        "Billing Reference",
-A.PROPERTY_REF                        "Property Reference",
-A.TEXT_FIELD90                        "Building Name/Number",
-A.STREET                              "Street",
-A.TOWN                                "Town",
-A.POSTCODE                            "Postcode",
-A.DMA_REF                             "DMA Code",
-A.TEXT_FIELD21                        "wpa Code",
-A.TEXT_FIELD75                        "cont Building Number",
-A.TEXT_FIELD76                        "cont Street",
-A.TEXT_FIELD77                        "cont Town",
-A.TEXT_FIELD78                        "cont County",
-A.TEXT_FIELD79                        "cont Postcode",
-A.TEXT_FIELD85                        "Highway Authority",
-A.TEXT_FIELD84                        "Highway Notified",
-A.TEXT_FIELD56                        "Highway Notice Type",
-A.TEXT_FIELD86                        "Remarks Date",
-A.LONG_DESCRIPT                       "Remarks",
-A.TEXT_FIELD80                        "Work Request Code",
-A.SHORT_DESCRIPT                      "Work Details",
-A.ASSET_REFERENCE                     "Asset Reference",
-A.NUMBER_FIELD20                      "Customers Affected",
-A.NUMBER_FIELD9                       "LDR Number",
-A.DATE_FIELD16                        "LDR Date",
-A.NUMBER_FIELD19                      "Leakage Rate",
-A.NUMBER_FIELD18                      "ESPB",
-A.TEXT_FIELD81                        "Inspection / Repair",
-A.TEXT_FIELD125                       "Failure Type",
-A.TEXT_FIELD64                        "Joint Failure",
-A.TEXT_FIELD66                        "Fitting Type",
-A.TEXT_FIELD65                        "Fitting Failure",
-A.TEXT_FIELD68                        "Seal Type",
-A.TEXT_FIELD67                        "Pipe Failure",
-A.TEXT_FIELD69                        "Repair Install Method",
-A.NUMBER_FIELD6                       "Depth of Pipeline",
-A.NUMBER_FIELD21                      "Pipe Size",
-A.TEXT_FIELD137                       "Pipe Material",
-A.NBS_BURSTTYPE                       "Burst Type Code",
-A.NBS_BURSTTYPE_DESC                  "Burst Type Description",
-A.LEAKAGE_GROUP_DESCRIPTION           "Leakage Type",
-A.NETWORK_GROUP                       "Network Type",
-A.XCOORD                              "X",
-A.YCOORD                              "Y",
-A.VALIDCOORD_DESC                     "Geo Validity Code"
-from 
-NB.ACT_OPERATION_V A
-where
-sqrt(power(a.xcoord-523730.5, 2)+power(a.ycoord-177631.5, 2)) < 50'
-
 # SET UP  #####################################################################
 library(sf)
 library(leaflet)
 library(dplyr)
 library(odbc)
 library(DBI)
+library(rmarkdown)
+source('~/R/rscripts/useful_functions.R')
+source('~/R/scripts/environment_varibles.R')
+
+# GET THE COORDINATES  ########################################################
+address <- '191 Fulham Palace Road'
+address_latlon <- geocodeAddress(address)
+address_xy <- 
+  address_latlon %>% 
+  st_as_sf(coords = c('lon', 'lat'), crs = 4326) %>% 
+  st_transform(27700) %>% 
+  st_coordinates()
+
+# CREATE THE QUERY  ###########################################################
+query_pt1 <- "SELECT V.Nblink NBID, V.OPERATION_NUMBER, V.Order_External_id2,
+          V.Parent_external_id1,
+          CASE
+            WHEN V.ACTUAL_START_DATE is not null THEN V.ACTUAL_START_DATE
+            WHEN V.DATE_FIELD6 is not null THEN V.DATE_FIELD6
+            ELSE NULL
+            END AS startDateFill,
+          CASE
+            WHEN V.ACTUAL_START_DATE is not null THEN 'ACTUAL_START_DATE'
+            WHEN V.DATE_FIELD6 is not null THEN 'DATE_FIELD6'
+            ELSE NULL
+            END AS startDateFillSource,
+          CASE
+            WHEN V.ACTUAL_FINISH_DATE is not null THEN V.ACTUAL_FINISH_DATE
+            WHEN V.DATE_FIELD18 is not null THEN V.DATE_FIELD18
+            WHEN V.DATE_FIELD3 is not null THEN V.DATE_FIELD3
+            WHEN REGEXP_INSTR(V.LONG_DESCRIPT, '(0[1-9]|[12][0-9]|3[01])[-/.](0[1-9]|1[012])[-/.](19|20)\\d\\d$') > 0
+              THEN TO_DATE(
+                REPLACE(
+                  REPLACE(SUBSTR(V.LONG_DESCRIPT, REGEXP_INSTR(V.LONG_DESCRIPT, '(0[1-9]|[12][0-9]|3[01])[-/.](0[1-9]|1[012])[-/.](19|20)\\d\\d$'), 10), '.', '/'),
+                  '-', '/'),
+                  'DD/MM/YYYY')
+            ELSE NULL
+            END AS endDateFill,
+          CASE
+            WHEN V.ACTUAL_FINISH_DATE is not null THEN 'ACTUAL_FINISH_DATE'
+            WHEN V.DATE_FIELD18 is not null THEN 'DATE_FIELD18'
+            WHEN V.DATE_FIELD3 is not null THEN 'DATE_FIELD3'
+            WHEN REGEXP_INSTR(V.LONG_DESCRIPT, '(0[1-9]|[12][0-9]|3[01])[-/.](0[1-9]|1[012])[-/.](19|20)\\d\\d$') > 0
+            THEN 'REMARKS FIELD'
+            ELSE NULL
+          END AS endDateFillSource,
+          V.Leakage_group,
+          V.Nbs_bursttype,
+          V.Network_group,
+          V.Raised_operation_type,
+          V.Current_operation_type,
+          V.Text_field53 Confirmed_operation_type,
+          V.Current_nb_status,
+          V.Number_field6 PipeDepth,
+          V.Number_field21 PipeSize,
+          V.Text_field137 PipeMaterial,
+          V.Property_ref,
+          V.Text_field75 Building_Nr,
+          V.Street,
+          V.Town,
+          V.Postcode,
+          V.Xcoord AS x,
+          V.Ycoord AS y,
+          V.Validcoord
+        FROM ACT_OPERATION_V V
+        where
+        sqrt(power(v.xcoord-"
+        
+query_pt2 <- ", 2)+power(v.ycoord-"
+query_pt3 <- ", 2)) < 50"
+query <- paste0(query_pt1, address_xy[1, 1], query_pt2, address_xy[1, 2], query_pt3)
 
 # GET THE DATA  ###############################################################
-con <- dbConnect(odbc::odbc(), "Netbase", UID = Sys.getenv('nb_id'), PWD = Sys.getenv('nb_pw'))
+con <- dbConnect(odbc::odbc(), "Netbase", 
+                 UID = Sys.getenv('nb_id'), 
+                 PWD = Sys.getenv('nb_pw'))
 operations <- dbGetQuery(con, query)
 
 # export the data
-write.table(operations, file = 'E:/results.csv', sep = ',', row.names = FALSE, col.names = TRUE)
+operations %>% arrange(desc(STARTDATEFILL)) %>% 
+  write.table(file = paste0('E:/2/', address, ' results.csv'), 
+            sep = ',', row.names = FALSE, col.names = TRUE)
 
 # create the leaflet map
-operations_map <- operations %>% 
-  st_as_sf(coords = )
-operations <- operations %>% st_transform(4326)
+operations_map <- 
+  operations %>% 
+  st_as_sf(coords = c('X', 'Y'), crs = 27700) %>% 
+  st_transform(4326) %>% 
+  select(operation = OPERATION_NUMBER, started = STARTDATEFILL,
+         finish = ENDDATEFILL, burst_type = NBS_BURSTTYPE,
+         job_type = CONFIRMED_OPERATION_TYPE,
+         pipe_size = PIPESIZE, pipe_material = PIPEMATERIAL)
 
-leaflet() %>% 
+map <- 
+  operations_map %>% 
+  leaflet() %>% 
   addTiles() %>% 
-  addCircleMarkers(data = operations %>% filter(dist_filter == 'within 50 metres'))
+  addCircleMarkers(radius = 2, popup = popupTable(operations_map, 
+                                                  row.numbers = FALSE)) %>% 
+  addMeasure(position = 'bottomleft', primaryLengthUnit = 'meters', 
+             primaryAreaUnit = 'sqmeters')
 
-
-leaflet() %>% 
-  addTiles() %>% 
-  addCircleMarkers(data = operations)
+# RENDER THE DOCUMENT  ########################################################
+render(output_format = 'html_document', 
+       input = 'Operations_coordinate_buffer.Rmd', 
+       output_file = paste0(address, ' results.html'))
