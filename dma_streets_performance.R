@@ -78,4 +78,36 @@ streets <- streets %>%
 
 # GET DMAS  ###################################################################
 dmas <- st_read('~/work/maps/dmaFixed.shp') %>% 
+  select(DMAAREACOD) %>% 
   st_transform(4326)
+
+# ASSIGN STREETS TO DMAS  #####################################################
+# this should cut streets which span DMAs and assign each
+# cut piece to the right DMAs
+test_area_streets <- streets %>% 
+  st_intersection(test_area)
+
+# ADD THE LENGTH OF THE STREET  ###############################################
+# this is the length of the cut street, i.e. by dma
+test_area_streets <- test_area_streets %>% 
+  mutate(length = st_length(.))
+
+# CREATE A BUFFER FOR EACH STREET OVER X METRES
+test_area_buffers <- 
+  test_area_streets %>% 
+  st_transform(27700) %>% 
+  st_buffer(endCapStyle = 'FLAT', dist = 10) %>% 
+  st_transform(4326)
+
+leaflet() %>% 
+  addPolylines(data = test_area_streets) %>% 
+  addPolygons(data = test_area_buffers) %>% 
+  addPolygons(data = test_area)
+
+# CUT THE BUFFER TO THE DMA
+
+
+
+
+# COUNT BURSTS FOR STREETS IN EACH DMA  #######################################
+
