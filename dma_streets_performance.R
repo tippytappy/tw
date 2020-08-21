@@ -1,6 +1,7 @@
 # SET UP  #####################################################################
 library(dplyr)
 library(sf)
+library(sp)
 library(leaflet)
 library(DBI)
 # GET BURSTS  #################################################################
@@ -52,8 +53,7 @@ bursts <- bursts %>%
          CreatedDate = STARTDATEFILL, CompletedDate = ENDDATEFILL, 
          ActivityType = LEAKAGE_GROUP, BurstType = NBS_BURSTTYPE, 
          X = XCOORD, Y = YCOORD) %>% 
-  st_as_sf(coords = c('X', 'Y'), crs = 27700) %>% 
-  st_transform(4326)
+  st_as_sf(coords = c('X', 'Y'), crs = 27700)
 
 
 mains_repairs <- st_read('~/work/maps/MainsRepairs.gdb', 'MainsRepair_OnPipe') 
@@ -65,32 +65,41 @@ mains_repairs <- mains_repairs %>%
   mutate(BurstType = 'M') %>% 
   select(Activity, CreatedDate, CompletedDate, ActivityType, BurstType,
          X, Y) %>% 
-  st_transform(4326)
+  st_transform(27700)
 
 all_bursts <- bursts %>% 
   bind_rows(mains_repairs)
 
 # GET STREETs  ################################################################
 # from the national street gazetteer
-streets <- st_read('f:/Streets.gdb', 'NSG')
-streets <- streets %>% 
-  st_transform(4326)
+tw_proj <- list()
+tw_proj$epsg <- as.integer(NA)
+tw_proj$proj4string <- "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +datum=OSGB36 +units=m +no_defs"
+attr(tw_proj, 'class') <- 'crs'
+streets <- st_read('f:/Streets.gdb', 'NSG') %>% 
+  st_transform(27700) %>% 
+  select(USRN, STREET)
 
 # GET DMAS  ###################################################################
 dmas <- st_read('~/work/maps/dmaFixed.shp') %>% 
   select(DMAAREACOD) %>% 
-  st_transform(4326)
+  st_transform(27700)
 
-# ASSIGN STREETS TO DMAS  #####################################################
+# TESTING  #####################################################
 # this should cut streets which span DMAs and assign each
 # cut piece to the right DMAs
 test_area_streets <- streets %>% 
   st_intersection(test_area)
 
-# ADD THE LENGTH OF THE STREET  ###############################################
-# this is the length of the cut street, i.e. by dma
 test_area_streets <- test_area_streets %>% 
+  group_by(USRN) %>% 
+  summarise() %>% 
   mutate(length = st_length(.))
+
+# join spans with the same uprn before buffering
+test_area_merged <- test_area_streets %>% 
+  group_by(USRN) %>% 
+  summarise()
 
 # CREATE A BUFFER FOR EACH STREET OVER X METRES
 test_area_buffers <- 
@@ -99,15 +108,31 @@ test_area_buffers <-
   st_buffer(endCapStyle = 'FLAT', dist = 10) %>% 
   st_transform(4326)
 
+test_area_buffers <- test_area_buffers %>% 
+  group_by(USRN) %>% 
+  summarise()
+
+test_area_streets <- test_area_streets %>% 
+  group_by(USRN) %>% 
+  summarise()
+
+
 leaflet() %>% 
+  addTiles() %>% 
   addPolylines(data = test_area_streets) %>% 
-  addPolygons(data = test_area_buffers) %>% 
-  addPolygons(data = test_area)
+  addPolygons(data = test_area_buffers)
 
-# CUT THE BUFFER TO THE DMA
+# METHOD 1  ###################################################################
+# join the streets by usrn
+# cut to area
+# buffer with flat ends
+streets_backup <- streets
+
+streets <- streets %>% 
+  group_by(USRN) %>% 
+  summarise()
 
 
 
-
-# COUNT BURSTS FOR STREETS IN EACH DMA  #######################################
-
+test_area_streets %>% st_length()
+test_area_buffers %>% st_length()
