@@ -128,11 +128,20 @@ leaflet() %>%
 # buffer with flat ends
 streets_backup <- streets
 
-streets <- streets %>% 
-  group_by(USRN) %>% 
-  summarise()
+# break the streets file into groups then merge the streets in each group
+merged_streets <- streets %>% 
+  mutate(letter_group = substr(STREET, 1, 1)) %>% 
+  group_by(letter_group) %>% 
+  group_split() %>% 
+  map_dfr(~ .x %>% group_by(USRN) %>% summarise())
 
+safe_buffer <- safely(st_buffer)
 
-
-test_area_streets %>% st_length()
-test_area_buffers %>% st_length()
+buffered_streets <- 
+  merged_streets[1:100,] %>% 
+  mutate(band = substr(as.character(USRN), 1, 1)) %>% 
+  group_by(band) %>% 
+  group_split() %>%
+  map(~ safe_buffer(.x, 15)) %>%
+  map("result") %>%
+  bind_rows()
