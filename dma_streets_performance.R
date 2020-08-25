@@ -4,6 +4,7 @@ library(sf)
 library(sp)
 library(leaflet)
 library(DBI)
+library(lubridate)
 # GET BURSTS  #################################################################
 con <- dbConnect(odbc::odbc(), "Netbase", 
                  UID = Sys.getenv('nb_id'), 
@@ -59,7 +60,7 @@ bursts <- bursts %>%
 mains_repairs <- st_read('~/work/maps/MainsRepairs.gdb', 'MainsRepair_OnPipe') 
 mains_repairs <- mains_repairs %>%
   mutate(CreatedDate = lubridate::ymd_hms(CreatedDate)) %>%
-  filter(CreatedDate >= lubridate::dmy("01/01/2015"),
+  filter(CreatedDate >= lubridate::dmy("01/04/2015"),
          RegulatoryReported == "Yes",
          ActivityType %in% c("VS", "AL")) %>%
   mutate(BurstType = 'M') %>% 
@@ -127,6 +128,7 @@ leaflet() %>%
 # cut to area
 # buffer with flat ends
 streets_backup <- streets
+buffer_size <- 15
 
 # break the streets file into groups then merge the streets in each group
 merged_streets <- streets %>% 
@@ -135,13 +137,111 @@ merged_streets <- streets %>%
   group_split() %>% 
   map_dfr(~ .x %>% group_by(USRN) %>% summarise())
 
+# buffering the streets seems to fail sometimes so
+# we make a safe function that will return NA 
+# instead of ending the process and losing our results
 safe_buffer <- safely(st_buffer)
 
 buffered_streets <- 
-  merged_streets[1:100,] %>% 
+  merged_streets %>% 
   mutate(band = substr(as.character(USRN), 1, 1)) %>% 
   group_by(band) %>% 
   group_split() %>%
   map(~ safe_buffer(.x, 15)) %>%
   map("result") %>%
   bind_rows()
+
+# lots of records haven't been processed
+not_processed <- merged_streets %>% 
+  filter(!USRN %in% buffered_streets$USRN)
+
+not_processed[1, ] %>% st_transform(4326) %>% leaflet() %>% addPolylines() %>% addTiles()
+
+# why?
+buffered_streets %>% 
+  st_drop_geometry() %>%
+  select(band) %>% 
+  table()
+
+# band 4 didn't process for some reason
+# 1     2     3     5     6     7     8     9 
+# 54583 95039 45793  2383  8960  5472  9803 16590 
+
+usrn_street <- streets %>% 
+  st_drop_geometry() %>% 
+  select(USRN, STREET) %>%
+  distinct()
+
+buffered_streets_np <- 
+  not_processed %>% 
+  st_buffer(15)
+
+# fails
+# Error in CPL_geos_op("buffer", x, dist, nQ, numeric(0), logical(0)) : 
+#   Evaluation error: TopologyException: depth mismatch at  at 415185 185490.
+
+buffered_streets_np <- 
+  not_processed %>% 
+  safe_buffer(15)
+# result = NULL
+
+any(is.na(st_dimension(not_processed)))  # empty geometries; none
+any(is.na(st_is_valid(not_processed)))  # corrupt geometries; FALSE
+
+buffered_streets_batch_2 <- 
+  not_processed %>% 
+  mutate(band = substr(as.character(USRN), 2, 2)) %>% 
+  group_by(band) %>% 
+  group_split() %>%
+  map(~ safe_buffer(.x, 15)) %>%
+  map("result") %>%
+  bind_rows()
+
+buffered_streets_batch_2 %>% 
+  st_drop_geometry() %>% 
+  select(band) %>% 
+  table()
+
+ buffered_streets <- buffered_streets %>% 
+   bind_rows(buffered_streets_batch_2)
+ 
+# update not processed
+ not_processed <- merged_streets %>% 
+   filter(!USRN %in% buffered_streets$USRN)
+ 
+ not_processed_test <- 
+   not_processed %>% 
+   filter(substring(USRN, 1, 2) == 40)
+
+# loop through not processed until we hit a buffer that doesn't work
+for(i in 1:nrow(not_processed)) {
+  item = not_processed[i, ]
+  print(item$USRN)
+  st_buffer(item, 15)}
+# USRN 40200288 fails
+ 
+ # test whether looping through the not processed will end with 
+ # the ok ones able to be gathered
+ loop_test_data <- not_processed %>% 
+   filter(USRN %in% c(40100825, 40200288))
+ loop_test <- vector('list', length = nrow(loop_test_data))
+ for(i in 1:nrow(loop_test_data)) {
+   item = loop_test_data[i, ]
+   print(item$USRN)
+   loop_test[[i]] <- safe_buffer(item, 15)
+ }
+ 
+# run this then extract the ones that worked
+loop_test <- vector('list', length = nrow(not_processed))
+for(i in 1:nrow(not_processed)) {
+   item = not_processed[i, ]
+   loop_test[[i]] <- safe_buffer(item, 15)
+}
+
+buffered_not_processed <- loop_test %>%
+  map("result") %>%
+  bind_rows()
+
+# add the now processed records to the other processed records
+buffered_streets <- buffered_streets %>% 
+  bind_rows(buffered_not_processed)
