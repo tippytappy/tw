@@ -123,125 +123,76 @@ leaflet() %>%
   addPolylines(data = test_area_streets) %>% 
   addPolygons(data = test_area_buffers)
 
-# METHOD 1  ###################################################################
-# join the streets by usrn
-# cut to area
-# buffer with flat ends
-streets_backup <- streets
-buffer_size <- 15
+# JOIN THE DATA  ###################################################################
+# merge the streets by usrn
+# cut the streets to dma
+# join bursts to their dmas
+# join burst-dma and street-dma to get burst-street-dma; the results
 
-# break the streets file into groups then merge the streets in each group
+# set the buffer size
+buffer_size <- 7.5
+
+# break the streets file into groups 
+# then merge the street spans by their USRN
 merged_streets <- streets %>% 
   mutate(letter_group = substr(STREET, 1, 1)) %>% 
   group_by(letter_group) %>% 
   group_split() %>% 
   map_dfr(~ .x %>% group_by(USRN) %>% summarise())
 
-# buffering the streets seems to fail sometimes so
-# we make a safe function that will return NA 
-# instead of ending the process and losing our results
-safe_buffer <- safely(st_buffer)
-
-buffered_streets <- 
-  merged_streets %>% 
+# now we can split the merged streets into their dmas
+streets_dma <- merged_streets %>% 
   mutate(band = substr(as.character(USRN), 1, 1)) %>% 
   group_by(band) %>% 
   group_split() %>%
-  map(~ safe_buffer(.x, 15)) %>%
-  map("result") %>%
-  bind_rows()
+  map_dfr(~ st_intersection(.x, dmas)) %>% 
+  mutate(street_length = st_length(.))
+# worked; took about 3 minutes
+# drops a lot of streets which are outside dmas
 
-# lots of records haven't been processed
-not_processed <- merged_streets %>% 
-  filter(!USRN %in% buffered_streets$USRN)
-
-not_processed[1, ] %>% st_transform(4326) %>% leaflet() %>% addPolylines() %>% addTiles()
-
-# why?
-buffered_streets %>% 
-  st_drop_geometry() %>%
-  select(band) %>% 
-  table()
-
-# band 4 didn't process for some reason
-# 1     2     3     5     6     7     8     9 
-# 54583 95039 45793  2383  8960  5472  9803 16590 
-
-usrn_street <- streets %>% 
-  st_drop_geometry() %>% 
-  select(USRN, STREET) %>%
-  distinct()
-
-buffered_streets_np <- 
-  not_processed %>% 
-  st_buffer(15)
-
-# fails
-# Error in CPL_geos_op("buffer", x, dist, nQ, numeric(0), logical(0)) : 
-#   Evaluation error: TopologyException: depth mismatch at  at 415185 185490.
-
-buffered_streets_np <- 
-  not_processed %>% 
-  safe_buffer(15)
-# result = NULL
-
-any(is.na(st_dimension(not_processed)))  # empty geometries; none
-any(is.na(st_is_valid(not_processed)))  # corrupt geometries; FALSE
-
-buffered_streets_batch_2 <- 
-  not_processed %>% 
-  mutate(band = substr(as.character(USRN), 2, 2)) %>% 
-  group_by(band) %>% 
+# next we join the bursts to the dmas
+# we do this so we can use the dma field to speed up the join later
+# and because the streets-burst query may return bursts in
+# neighbouring dmas, and this lets us filter those out
+bursts_dma <- all_bursts %>% 
+  group_by(year(CreatedDate)) %>% 
   group_split() %>%
-  map(~ safe_buffer(.x, 15)) %>%
-  map("result") %>%
-  bind_rows()
+  map_df(~ st_intersection(.x, dmas))
+# worked; took about 4 minutes
 
-buffered_streets_batch_2 %>% 
-  st_drop_geometry() %>% 
-  select(band) %>% 
-  table()
+# we make a list of dmas which have a burst 
+# so we can use this to drive the map function
+dmas_with_bursts <- unique(bursts_dma$DMAAREACOD)
 
- buffered_streets <- buffered_streets %>% 
-   bind_rows(buffered_streets_batch_2)
- 
-# update not processed
- not_processed <- merged_streets %>% 
-   filter(!USRN %in% buffered_streets$USRN)
- 
- not_processed_test <- 
-   not_processed %>% 
-   filter(substring(USRN, 1, 2) == 40)
-
-# loop through not processed until we hit a buffer that doesn't work
-for(i in 1:nrow(not_processed)) {
-  item = not_processed[i, ]
-  print(item$USRN)
-  st_buffer(item, 15)}
-# USRN 40200288 fails
- 
- # test whether looping through the not processed will end with 
- # the ok ones able to be gathered
- loop_test_data <- not_processed %>% 
-   filter(USRN %in% c(40100825, 40200288))
- loop_test <- vector('list', length = nrow(loop_test_data))
- for(i in 1:nrow(loop_test_data)) {
-   item = loop_test_data[i, ]
-   print(item$USRN)
-   loop_test[[i]] <- safe_buffer(item, 15)
- }
- 
-# run this then extract the ones that worked
-loop_test <- vector('list', length = nrow(not_processed))
-for(i in 1:nrow(not_processed)) {
-   item = not_processed[i, ]
-   loop_test[[i]] <- safe_buffer(item, 15)
+# we'll use this function to join the data
+# it reduces the join data sets to only a single dma
+# to speed up the joins
+join_bursts_to_streets <- function(x) {
+  dma_bursts <- bursts_dma %>% 
+    filter(DMAAREACOD == x)
+  dma_streets <- streets_dma %>% 
+    filter(DMAAREACOD == x)
+  dma_bursts %>% 
+    st_buffer(buffer_size) %>% 
+  st_intersection(dma_streets) %>% 
+    st_drop_geometry()
 }
 
-buffered_not_processed <- loop_test %>%
-  map("result") %>%
-  bind_rows()
+# we make a safe version to handle errors
+safe_join_bs <- safely(join_bursts_to_streets)
 
-# add the now processed records to the other processed records
-buffered_streets <- buffered_streets %>% 
-  bind_rows(buffered_not_processed)
+# now we join the bursts to the streets, one dma at a time
+bursts_dma_street <- dmas_with_bursts %>% 
+  map(safe_join_bs) %>% 
+  map('result') %>% 
+  bind_rows() %>% 
+  filter(DMAAREACOD == DMAAREACOD.1)
+
+results <- bursts_dma_street %>% 
+  select(-c(X, Y, Shape, year.CreatedDate., band, DMAAREACOD.1)) %>% 
+  group_by(DMAAREACOD, USRN) %>% 
+  summarise(total_bursts = n(), street_length = mean(street_length)) %>% 
+  mutate(norm_bursts_score = total_bursts / street_length) %>% 
+  left_join(usrn_street, by = 'USRN') %>% 
+  select(DMAAREACOD, STREET, everything()) %>% 
+  ungroup()
