@@ -86,43 +86,6 @@ dmas <- st_read('~/work/maps/dmaFixed.shp') %>%
   select(DMAAREACOD) %>% 
   st_transform(27700)
 
-# TESTING  #####################################################
-# this should cut streets which span DMAs and assign each
-# cut piece to the right DMAs
-test_area_streets <- streets %>% 
-  st_intersection(test_area)
-
-test_area_streets <- test_area_streets %>% 
-  group_by(USRN) %>% 
-  summarise() %>% 
-  mutate(length = st_length(.))
-
-# join spans with the same uprn before buffering
-test_area_merged <- test_area_streets %>% 
-  group_by(USRN) %>% 
-  summarise()
-
-# CREATE A BUFFER FOR EACH STREET OVER X METRES
-test_area_buffers <- 
-  test_area_streets %>% 
-  st_transform(27700) %>% 
-  st_buffer(endCapStyle = 'FLAT', dist = 10) %>% 
-  st_transform(4326)
-
-test_area_buffers <- test_area_buffers %>% 
-  group_by(USRN) %>% 
-  summarise()
-
-test_area_streets <- test_area_streets %>% 
-  group_by(USRN) %>% 
-  summarise()
-
-
-leaflet() %>% 
-  addTiles() %>% 
-  addPolylines(data = test_area_streets) %>% 
-  addPolygons(data = test_area_buffers)
-
 # JOIN THE DATA  ###################################################################
 # merge the streets by usrn
 # cut the streets to dma
